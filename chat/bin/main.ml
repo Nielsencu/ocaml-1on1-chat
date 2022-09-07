@@ -81,12 +81,17 @@ let recv_header sock =
 
 let send_string sock str =
   let length = String.length str in
-  let length_bytes = Bytes.create 2 in
-  let () = Bytes.set_uint16_be length_bytes 0 length in
-  Lwt_unix.send sock length_bytes 0 2 [] >>= fun _ -> 
-    let buffer = Bytes.of_string str in
-    Lwt_unix.send sock buffer 0 length [] >>= fun _ ->
-      Lwt.return()
+  (* Since we are using unsigned 16 bits integer, to prevent overflow we discard message with size > 2**16-1 *)
+  if length >= 65535 then
+    Lwt_io.printf "Message causing integer overflow" >>= fun _ ->
+    Lwt.return ()
+  else
+    let length_bytes = Bytes.create 2 in
+    let () = Bytes.set_uint16_be length_bytes 0 length in
+    Lwt_unix.send sock length_bytes 0 2 [] >>= fun _ -> 
+      let buffer = Bytes.of_string str in
+      Lwt_unix.send sock buffer 0 length [] >>= fun _ ->
+        Lwt.return()
 
 let recv_string sock =
   let length_buffer = Bytes.create 2 in
@@ -108,8 +113,8 @@ let recv_loop (sock, sender) =
   let rec loop () = 
     recv_header sock >>*= function 
       | Trip ->
-        recv_string sock >>*= fun msg ->
-        Lwt_io.printf "Round-trip time: %.5f\n" (Unix.gettimeofday() -. (float_of_string msg)) >>=
+        recv_string sock >>*= fun time ->
+        Lwt_io.printf "Round-trip time: %.5f\n" (Unix.gettimeofday() -. (float_of_string time)) >>=
         fun _ -> Lwt.return() >>= loop
       | Message ->
         recv_string sock >>*= fun msg ->
@@ -118,8 +123,20 @@ let recv_loop (sock, sender) =
         send_header sock Trip >>= fun _ ->
         send_string sock time >>= fun _ -> Lwt.return() >>= loop
   in loop()
+let send_loop sock = 
+  let rec loop () = 
+    Lwt_io.read_line_opt Lwt_io.stdin >>= fun text ->
+    match text with 
+    | None -> 
+      Lwt.return() >>= loop
+    | Some text ->
+      send_header sock Message >>= fun _ -> 
+      send_string sock text >>= fun _ ->
+      send_string sock (string_of_float (Unix.gettimeofday())) >>= loop
+    in loop()
 
 let run_server host_addr = 
+  let rec serve () = 
   create_server_socket host_addr >>= fun server_sock ->
   Lwt_io.printf "Waiting for client to connect...\n" >>= fun _ ->
   Lwt_unix.accept server_sock >>= fun (client_sock,_) -> 
@@ -127,7 +144,8 @@ let run_server host_addr =
     let () = Lwt.async (fun () -> 
       recv_loop (client_sock, "Client") >>= fun _ ->
       Lwt.return ()) 
-    in Lwt.return client_sock
+    in send_loop client_sock >>= serve
+  in serve()
 
 let run_client host_addr = 
   create_client_socket host_addr >>= fun sock ->
@@ -135,9 +153,9 @@ let run_client host_addr =
   let () = Lwt.async (fun () -> 
     recv_loop (sock, "Server") >>= fun _ ->
     Lwt.return ()) 
-  in Lwt.return sock
+  in send_loop sock
 
-let init () = 
+let main () = 
   let host_addr = get_host_addr () in
   match !mode with
   | "server" ->
@@ -145,19 +163,6 @@ let init () =
   | "client" -> 
     run_client (host_addr)
   | _ -> Lwt.fail Exit
-
-let main () = 
-  init() >>= fun sock ->
-  let rec send_loop () = 
-    Lwt_io.read_line_opt Lwt_io.stdin >>= fun text ->
-    match text with 
-    | None -> 
-      Lwt.return() >>= send_loop
-    | Some text ->
-      send_header sock Message >>= fun _ -> 
-      send_string sock text >>= fun _ ->
-      send_string sock (string_of_float (Unix.gettimeofday())) >>= send_loop
-  in send_loop()
 
 let usage_msg = "start [-host <host>] [-port <port>] [-mode <client|server>]"
 
