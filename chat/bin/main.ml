@@ -117,7 +117,10 @@ let recv_loop (sock, sender) =
         Lwt_io.printf "Round-trip time: %.5f\n" (Unix.gettimeofday() -. (float_of_string time)) >>=
         fun _ -> Lwt.return() >>= loop
       | Message ->
-        recv_string sock >>*= fun msg ->
+        recv_string sock >>= function
+        | Error _ ->
+          Lwt.return (Error "Yes")
+        | Ok msg ->
         Lwt_io.printf "%s: %s\n" sender msg >>= fun _ -> 
         recv_string sock >>*= fun time -> 
         send_header sock Trip >>= fun _ ->
@@ -136,24 +139,38 @@ let send_loop sock =
     in loop()
 
 let run_server host_addr = 
-  let rec serve () = 
   create_server_socket host_addr >>= fun server_sock ->
-  Lwt_io.printf "Waiting for client to connect...\n" >>= fun _ ->
-  Lwt_unix.accept server_sock >>= fun (client_sock,_) -> 
-    Lwt_io.printf "Client connected! Happy Chatting :)\n" >>= fun _ ->
-    let () = Lwt.async (fun () -> 
-      recv_loop (client_sock, "Client") >>= fun _ ->
-      Lwt.return ()) 
-    in send_loop client_sock >>= serve
+  let rec serve () = 
+    Lwt_io.printf "Waiting for client to connect...\n" >>= fun _ ->
+    Lwt_unix.accept server_sock >>= fun (client_sock,_) -> 
+      Lwt_io.printf "Client connected! Happy Chatting :)\n" >>= fun _ ->
+      let send_thread = 
+        send_loop client_sock >>= fun _ -> 
+          Lwt.return ()
+        in recv_loop (client_sock, "Client") >>= function
+        | Error _ ->
+          let () = Lwt.cancel send_thread in 
+          Lwt_io.printf "Client disconnected!\n" >>= fun _ ->
+          Lwt.return () >>= serve
+        | Ok _ ->
+          Lwt.return () >>= serve 
+      >>= fun _ -> Lwt.return ()
   in serve()
 
 let run_client host_addr = 
   create_client_socket host_addr >>= fun sock ->
   Lwt_io.printf "Client listening on %s:%i! Happy Chatting :)\n" (Unix.string_of_inet_addr host_addr) !port >>= fun _ ->
-  let () = Lwt.async (fun () -> 
-    recv_loop (sock, "Server") >>= fun _ ->
-    Lwt.return ()) 
-  in send_loop sock
+    let send_thread = 
+      send_loop sock >>= fun _ -> 
+        Lwt.return ()
+      in recv_loop (sock, "Client") >>= function
+      | Error _ ->
+        let () = Lwt.cancel send_thread in 
+        Lwt_io.printf "Server disconnected, terminating chat!\n" >>= fun _ ->
+        Lwt.return ()
+      | Ok _ ->
+        Lwt.return ()
+    >>= fun _ -> Lwt.return ()
 
 let main () = 
   let host_addr = get_host_addr () in
