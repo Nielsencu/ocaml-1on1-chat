@@ -181,7 +181,7 @@ let main () =
     run_client (host_addr)
   | _ -> Lwt.fail Exit
 
-let usage_msg = "start [-host <host>] [-port <port>] [-mode <client|server>]"
+let usage_msg = "chat [-host <host>] [-port <port>] [-mode <client|server>]"
 
 let speclist = [
   ("-host", Arg.Set_string host, "Hostname to connect/listen: default 127.0.0.1");
